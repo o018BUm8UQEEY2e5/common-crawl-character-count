@@ -32,7 +32,7 @@ for name in order(parse(urlopen(prefix + 'crawl-data/index.html')).xpath('.//tab
             if not filename.endswith(b'.warc.wet.gz'):
                 raise ValueError(f'path filename doesn\'t end with ".warc.wet.gz", got: {filename}')
             if args.verbose:
-                print(filename.decode("utf-8"))
+                print(filename.decode('utf-8'))
             filename = filename.removesuffix(b'warc.wet.gz') + b'json'
             if isfile(filename):
                 with open(filename, 'r') as json_file:
@@ -80,6 +80,6 @@ for name in order(parse(urlopen(prefix + 'crawl-data/index.html')).xpath('.//tab
                     dump(count, json_file)
                 rename(filename_partial, filename)
                 total += count
-with open("grand_total.json.partial", 'w') as json_file:
+with open('grand_total.json.partial', 'w') as json_file:
     dump(count, json_file)
-rename("grand_total.json.partial", "grand_total.json")
+rename('grand_total.json.partial', 'grand_total.json')
