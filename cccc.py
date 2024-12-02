@@ -6,8 +6,8 @@ from collections import Counter
 from gzip import GzipFile
 from json import dump, load
 from lxml.html import parse
-from os.path import isfile, split
 from os import remove, rename
+from pathlib import Path
 from random import shuffle
 from urllib.request import urlopen
 
@@ -24,23 +24,26 @@ parser.add_argument('-r', '--random', action='store_true', default=False, help='
 parser.add_argument('-v', '--verbose', action='store_true', default=False, help='print out filenames as they are processed (default: false)')
 args = parser.parse_args()
 prefix = 'https://data.commoncrawl.org/'
+counts_subdirectory = Path('counts/')
 total = Counter()
 for name in order(parse(urlopen(prefix + 'crawl-data/index.html')).xpath('.//table/tbody/tr/td[1]/a/text()'), random_order=args.random):
     with GzipFile(fileobj=urlopen(prefix + 'crawl-data/' + name + '/wet.paths.gz')) as paths:
         for path in order(paths.read().split(b'\n'), random_order=args.random):
-            filename = split(path)[1]
-            if not filename.endswith(b'.warc.wet.gz'):
+            path = path.decode('utf-8')
+            filename = Path(path).name
+            if not filename.endswith('.warc.wet.gz'):
                 raise ValueError(f'path filename doesn\'t end with ".warc.wet.gz", got: {filename}')
             if args.verbose:
-                print(filename.decode('utf-8'))
-            filename = filename.removesuffix(b'warc.wet.gz') + b'json'
-            if isfile(filename):
-                with open(filename, 'r') as json_file:
+                print(filename)
+            filename = filename.removesuffix('warc.wet.gz') + 'json'
+            filepath = counts_subdirectory / filename
+            if filepath.is_file():
+                with open(filepath, 'r') as json_file:
                     count = load(json_file)
                 for k, v in count.items():
                     total[k] += v
             else:
-                with GzipFile(fileobj=urlopen(prefix + path.decode(encoding='utf-8'))) as segment:
+                with GzipFile(fileobj=urlopen(prefix + path)) as segment:
                     count = Counter()
                     while True:
                         try:
@@ -75,10 +78,10 @@ for name in order(parse(urlopen(prefix + 'crawl-data/index.html')).xpath('.//tab
                                     raise ValueError(f'expected: {b'\r\n\r\n'}, got: {a+b}') 
                         except StopIteration:
                             raise ValueError('unexpected end of record')
-                filename_partial = filename + b'.partial'
-                with open(filename_partial, 'w') as json_file:
+                filepath_partial = counts_subdirectory / (filename + '.partial')
+                with open(filepath_partial, 'w') as json_file:
                     dump(count, json_file)
-                rename(filename_partial, filename)
+                rename(filepath_partial, filepath)
                 total += count
 with open('grand_total.json.partial', 'w') as json_file:
     dump(count, json_file)
