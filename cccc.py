@@ -9,7 +9,7 @@ from lxml.html import parse
 from os import remove, rename
 from pathlib import Path
 from random import shuffle
-from urllib.request import urlopen
+from urllib3 import request
 
 def order(iterable, random_order=False):
     if random_order:
@@ -26,8 +26,8 @@ args = parser.parse_args()
 prefix = 'https://data.commoncrawl.org/'
 counts_subdirectory = Path('counts/')
 total = Counter()
-for name in order(parse(urlopen(prefix + 'crawl-data/index.html')).xpath('.//table/tbody/tr/td[1]/a/text()'), random_order=args.random):
-    with GzipFile(fileobj=urlopen(prefix + 'crawl-data/' + name + '/wet.paths.gz')) as paths:
+for name in order(parse(request('GET', prefix + 'crawl-data/index.html', preload_content=False)).xpath('.//table/tbody/tr/td[1]/a/text()'), random_order=args.random):
+    with GzipFile(fileobj=request('GET', prefix + 'crawl-data/' + name + '/wet.paths.gz', preload_content=False)) as paths:
         for path in order(paths.read().split(b'\n'), random_order=args.random):
             path = path.decode('utf-8')
             filename = Path(path).name
@@ -43,7 +43,7 @@ for name in order(parse(urlopen(prefix + 'crawl-data/index.html')).xpath('.//tab
                 for k, v in count.items():
                     total[k] += v
             else:
-                with GzipFile(fileobj=urlopen(prefix + path)) as segment:
+                with GzipFile(fileobj=request('GET', prefix + path, preload_content=False)) as segment:
                     count = Counter()
                     while True:
                         try:
