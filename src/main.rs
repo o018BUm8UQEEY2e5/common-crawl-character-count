@@ -320,8 +320,8 @@ struct Args {
         default_value_t = u32::MAX,
         help = "The maximum number of retries for network requests (default: 2^32-1)")]
     retries: u32,
-    #[arg(short, long, default_value_t = false, help = "Show progress")]
-    progress: bool,
+    //    #[arg(short, long, default_value_t = false, help = "Show progress")]
+    //    progress: bool,
     #[arg(
         short,
         long,
