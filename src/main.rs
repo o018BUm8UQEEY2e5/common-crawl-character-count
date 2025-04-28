@@ -192,7 +192,7 @@ async fn segment_count(
     stream::iter(
         warc_reader
             .iter_records()
-            .map(|maybe_record| -> Result<Counter<String>, Error> {
+            .map(|maybe_record| {
                 let record = maybe_record?;
                 Ok(if record.warc_type() == &RecordType::Conversion {
                     let mut encoding_detector = EncodingDetector::new();
