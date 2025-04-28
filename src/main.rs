@@ -356,8 +356,8 @@ async fn main() -> Result<(), Error> {
             ExponentialBackoff::builder().build_with_max_retries(args.retries),
         ))
         .build();
-    let base_url = Url::parse("https://data.commoncrawl.org/")?;
-    let index = Url::parse("https://data.commoncrawl.org/crawl-data/index.html")?;
+    let base_url = Url::parse("https://data.commoncrawl.org/").unwrap();
+    let index = Url::parse("https://data.commoncrawl.org/crawl-data/index.html").unwrap();
     let counts_directory = PathBuf::from(args.counts_directory);
     save(
         &counts_directory.join("grand_total.json"),
