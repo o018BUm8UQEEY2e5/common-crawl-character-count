@@ -1,10 +1,9 @@
 use async_compression::tokio::bufread::GzipDecoder;
-use async_stream::try_stream;
 use bytes::Bytes;
 use chardetng::EncodingDetector;
 use clap::{Parser, ValueHint};
 use counter::Counter;
-use futures_util::stream::{Stream, StreamExt, TryStream, TryStreamExt};
+use futures_util::stream::{self, Stream, StreamExt, TryStream, TryStreamExt};
 use log::{Level, LevelFilter, Log, Metadata, Record, info, set_logger, set_max_level};
 use regex::Regex;
 use reqwest::{Client, Response};
@@ -184,17 +183,18 @@ async fn segment_count(
     segment_url: Url,
 ) -> Result<Counter<String>, Error> {
     info!("counting: {}", segment_url);
-    try_stream! {
-        let mut buffer: Vec<u8> = Vec::new();
-        let mut gzip_decoder =
-            create_gzip_decoder(get_url_stream_reader(&client, segment_url).await?).await;
-        // TODO async WARC reader
-        gzip_decoder.read_to_end(&mut buffer).await?;
-        let warc_reader = WarcReader::new(&buffer[..]);
-        for record in warc_reader.iter_records() {
-            let record = record?;
-            if record.warc_type() == &RecordType::Conversion {
-                {
+    let mut buffer: Vec<u8> = Vec::new();
+    let mut gzip_decoder =
+        create_gzip_decoder(get_url_stream_reader(&client, segment_url).await?).await;
+    // TODO: async WARC reader
+    gzip_decoder.read_to_end(&mut buffer).await?;
+    let warc_reader = WarcReader::new(&buffer[..]);
+    stream::iter(
+        warc_reader
+            .iter_records()
+            .map(|maybe_record| -> Result<Counter<String>, Error> {
+                let record = maybe_record?;
+                Ok(if record.warc_type() == &RecordType::Conversion {
                     let mut encoding_detector = EncodingDetector::new();
                     encoding_detector.feed(record.body(), true);
                     let target_uri =
@@ -211,11 +211,13 @@ async fn segment_count(
                                         .rsplit('.')
                                         .next()
                                         .ok_or_else(|| Error::NoTLDInDomain(String::from(domain)))
-                                        .and_then(|tld| {
-                                            if tld::exist(tld) {
-                                                Ok(tld.as_bytes())
+                                        .and_then(|top_level_domain| {
+                                            if tld::exist(top_level_domain) {
+                                                Ok(top_level_domain.as_bytes())
                                             } else {
-                                                Err(Error::TLDDoesNotExist(String::from(tld)))
+                                                Err(Error::TLDDoesNotExist(String::from(
+                                                    top_level_domain,
+                                                )))
                                             }
                                         })
                                 })
@@ -223,13 +225,14 @@ async fn segment_count(
                             true,
                         )
                         .decode(record.body());
-                    yield UnicodeSegmentation::graphemes(decoded.as_ref(), true)
+                    UnicodeSegmentation::graphemes(decoded.as_ref(), true)
                         .map(String::from)
                         .collect()
-                }
-            }
-        }
-    }
+                } else {
+                    Counter::new()
+                })
+            }),
+    )
     .try_sum()
     .await
 }
