@@ -353,7 +353,7 @@ async fn main() -> Result<(), Error> {
     };
     let client = ClientBuilder::new(Client::new())
         .with(RetryTransientMiddleware::new_with_policy(
-            ExponentialBackoff::builder().build_with_max_retries(u32::MAX),
+            ExponentialBackoff::builder().build_with_max_retries(args.retries),
         ))
         .build();
     let base_url = Url::parse("https://data.commoncrawl.org/")?;
