@@ -4,7 +4,7 @@ use chardetng::EncodingDetector;
 use clap::{Parser, ValueHint};
 use counter::Counter;
 use futures_util::stream::{self, Stream, StreamExt, TryStream, TryStreamExt};
-use log::{Level, LevelFilter, Log, Metadata, Record, info, set_logger, set_max_level};
+use log::{Level, LevelFilter, Log, Metadata, Record, info, set_logger, set_max_level, warn};
 use regex::Regex;
 use reqwest::{Client, Response};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
@@ -183,64 +183,55 @@ async fn segment_count(
     segment_url: Url,
 ) -> Result<Counter<String>, Error> {
     info!("counting: {}", segment_url);
-    let mut buffer: Vec<u8> = Vec::new();
+    let mut buffer: Vec<u8> = Vec::new(); // should we try to estimate capacity?
     let mut gzip_decoder =
         create_gzip_decoder(get_url_stream_reader(&client, segment_url).await?).await;
-    // TODO: async WARC reader
     gzip_decoder.read_to_end(&mut buffer).await?;
+    // TODO: async WARC reader
     let warc_reader = WarcReader::new(&buffer[..]);
-    stream::iter(
-        warc_reader
-            .iter_records()
-            .map(|maybe_record| {
-                let record = maybe_record?;
-                Ok(if record.warc_type() == &RecordType::Conversion {
-                    let mut encoding_detector = EncodingDetector::new();
-                    encoding_detector.feed(record.body(), true);
-                    let target_uri =
-                        Url::parse(&record.header(WarcHeader::TargetURI).ok_or_else(|| {
-                            let (raw_record_header, _) = record.clone().into_raw_parts();
-                            Error::TargetURINotInWARCHeader(raw_record_header.to_string())
-                        })?)?;
-                    let (decoded, _, _) = encoding_detector
-                        .guess(
-                            target_uri
-                                .domain()
-                                .map(|domain| {
-                                    // accept domains like "cvetyru-vn.ru."
-                                    match domain.strip_suffix('.') {
-                                        Some(domain) => domain,
-                                        None => domain,
-                                    }
-                                    .rsplit('.')
-                                    .next()
-                                    .ok_or_else(|| Error::NoTLDInDomain(String::from(domain)))
-                                    .and_then(
-                                        |top_level_domain| {
-                                            if tld::exist(top_level_domain) {
-                                                Ok(top_level_domain.as_bytes())
-                                            } else {
-                                                Err(Error::TLDDoesNotExist(String::from(
-                                                    top_level_domain,
-                                                )))
-                                            }
-                                        },
-                                    )
-                                })
-                                .transpose()?,
-                            true,
-                        )
-                        .decode(record.body());
-                    UnicodeSegmentation::graphemes(decoded.as_ref(), true)
-                        .map(String::from)
-                        .collect()
-                } else {
-                    Counter::new()
-                })
-            }),
-    )
-    .try_sum()
-    .await
+    let counts = warc_reader.iter_records().map(|maybe_record| {
+        let record = maybe_record?;
+        if record.warc_type() != &RecordType::Conversion {
+            return Ok(Counter::new());
+        }
+        let mut encoding_detector = EncodingDetector::new();
+        encoding_detector.feed(record.body(), true);
+        let Some(header) = record.header(WarcHeader::TargetURI) else {
+            let (raw_record_header, _) = record.clone().into_raw_parts();
+            return Err(Error::TargetURINotInWARCHeader(
+                raw_record_header.to_string(),
+            ));
+        };
+        let target_uri = Url::parse(&header)?;
+        let top_level_domain = target_uri
+            .domain()
+            .map(|domain| {
+                // accept malformed domains like "cvetyru-vn.ru."
+                let Some(top_level_domain_) = match domain.strip_suffix('.') {
+                    Some(fixed_domain) => {
+                        warn!("Malformed domain: {}", domain);
+                        fixed_domain
+                    }
+                    None => domain,
+                }
+                .rsplit('.')
+                .next() else {
+                    return Err(Error::NoTLDInDomain(String::from(domain)));
+                };
+                if !tld::exist(top_level_domain_) {
+                    return Err(Error::TLDDoesNotExist(String::from(top_level_domain_)));
+                }
+                Ok(top_level_domain_.as_bytes())
+            })
+            .transpose()?;
+        let (decoded, _, _) = encoding_detector
+            .guess(top_level_domain, true)
+            .decode(record.body());
+        Ok(UnicodeSegmentation::graphemes(decoded.as_ref(), true)
+            .map(String::from)
+            .collect())
+    });
+    stream::iter(counts).try_sum().await
 }
 
 fn url_to_json_filename(url: &Url) -> Result<PathBuf, Error> {
