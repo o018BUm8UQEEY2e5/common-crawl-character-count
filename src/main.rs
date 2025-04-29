@@ -192,47 +192,41 @@ async fn segment_count(
         }
         let mut encoding_detector = EncodingDetector::new();
         encoding_detector.feed(record.body(), true);
-        let Some(header) = record.header(WarcHeader::TargetURI) else {
+        let Some(target_uri) = record.header(WarcHeader::TargetURI) else {
             let (raw_record_header, _) = record.clone().into_raw_parts();
             return Err(Error::TargetURINotInWARCHeader(
                 raw_record_header.to_string(),
             ));
         };
-        let target_uri = Url::parse(&header)?;
-        let domain = target_uri.domain();
-        let maybe_tld_bytes = domain.and_then(|domain| {
-            // accept malformed domains like "cvetyru-vn.ru."
-            let domain = match domain.strip_suffix('.') {
-                Some(fixed_domain) => {
-                    warn!("malformed domain: \"{}\"", domain);
-                    fixed_domain
-                }
+        let parsed_url = match Url::parse(&target_uri) {
+            Ok(parsed_url) => Some(parsed_url),
+            Err(url::ParseError::IdnaError) => {
+                warn!("IDNA error parsing url: \"{}\"", &target_uri);
+                None
+            }
+            Err(parse_error) => return Err(Error::from(parse_error)),
+        };
+        let tld_bytes = parsed_url
+            .as_ref()
+            .and_then(|url| url.domain())
+            .map(|domain| match domain.strip_suffix('.') {
+                Some(fqdn) => fqdn,
                 None => domain,
-            };
-            match domain 
-            .rsplit('.')
-            .next()
-            {
-                Some(top_level_domain) => {
-                    if tld::exist(top_level_domain) {
-                        Some(top_level_domain.as_bytes())
-                    } else {
-                        warn!(
-                            "invalid tld: \"{}\" (domain: \"{}\")",
-                            top_level_domain, domain
-                        );
-                        None
-                    }
-                }
-                None => {
-                    warn!("couldn't find tld in \"{}\"", target_uri);
+            })
+            .and_then(|domain| domain.rsplit('.').next())
+            .and_then(|top_level_domain| {
+                if tld::exist(top_level_domain) {
+                    Some(top_level_domain.as_bytes())
+                } else {
+                    warn!(
+                        "invalid tld: \"{}\" (uri: \"{}\")",
+                        top_level_domain, target_uri
+                    );
                     None
                 }
-            }
-        });
-
+            });
         let (decoded, _, _) = encoding_detector
-            .guess(maybe_tld_bytes, true)
+            .guess(tld_bytes, true)
             .decode(record.body());
         Ok(UnicodeSegmentation::graphemes(decoded.as_ref(), true)
             .map(String::from)
