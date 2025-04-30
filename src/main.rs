@@ -179,9 +179,15 @@ async fn segment_count(
     segment_url: Url,
 ) -> Result<Counter<String>, Error> {
     info!("counting: {}", segment_url);
-    let mut buffer: Vec<u8> = Vec::new(); // should we try to estimate capacity?
-    let mut gzip_decoder =
-        create_gzip_decoder(get_url_stream_reader(&client, segment_url).await?).await;
+    let response = get(&client, segment_url).await?;
+    let mut buffer: Vec<u8> = match response.content_length() {
+        Some(content_length) => Vec::with_capacity(content_length.try_into().unwrap_or(usize::MAX)),
+        None => Vec::new(),
+    };
+    let mut gzip_decoder = create_gzip_decoder(StreamReader::new(
+        response.bytes_stream().map_err(io::Error::other),
+    ))
+    .await;
     gzip_decoder.read_to_end(&mut buffer).await?;
     // TODO: async WARC reader
     let warc_reader = WarcReader::new(&buffer[..]);
