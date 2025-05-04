@@ -1,0 +1,10 @@
+count-segments.py
+__pycache__/
+Cargo.lock
+# flamegraph
+flamegraph.svg
+perf.data
+perf.data.old
+profile.json.gz
+# Added by cargo
+/target
