@@ -268,7 +268,7 @@ async fn segment_count(
     client: ClientWithMiddleware,
     segment_url: Url,
 ) -> Result<Counter<String>, Error> {
-    info!("counting: {}", segment_url);
+    info!("counting: {segment_url}");
     let gzip_decoder = create_gzip_decoder(StreamReader::new(
         get_byte_stream(client, segment_url).map_err(io::Error::other),
     ))
@@ -313,7 +313,7 @@ async fn segment_count(
             if tld::exist(top_level) {
                 Some(top_level.as_bytes())
             } else {
-                warn!("Invalid TLD: \"{}\" (URI: \"{}\")", top_level, target_uri);
+                warn!("Invalid TLD: \"{top_level}\" (URI: \"{target_uri}\")");
                 None
             }
         });
