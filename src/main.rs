@@ -368,13 +368,12 @@ async fn main() -> Result<(), Error> {
         .then(|url| get_segment_urls(&client, &base_url, url))
         .flatten_unordered(limit)
         .map(|url| async {
-            let result: Result<Counter<String>, Error> = spawn(process_segment(
+            spawn(process_segment(
                 client.clone(),
                 url?,
                 counts_directory.clone(),
             ))
-            .await?;
-            result
+            .await? as Result<Counter<String>, Error>
         })
         .buffer_unordered(limit.unwrap_or(usize::MAX));
     if total {
