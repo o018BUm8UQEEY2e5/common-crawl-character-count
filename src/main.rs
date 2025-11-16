@@ -27,7 +27,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use tokio::{
-    fs::try_exists,
+    fs::{create_dir_all, try_exists}, // TODO: use is_file
     io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, BufReader},
     task::{JoinError, spawn},
 };
@@ -44,8 +44,6 @@ enum Error {
     IO(#[from] std::io::Error),
     #[error("tokio join error: {0}")]
     Join(#[from] JoinError),
-    #[error("Error: No filename in path: {0}")]
-    NoFilenameInPath(String),
     #[error("Error: No \"href\" in \"a\" tag: {0}")]
     NoHref(String),
     #[error("Error: No links found in {0}")]
@@ -60,6 +58,8 @@ enum Error {
     TryFromInt(#[from] TryFromIntError),
     #[error("Error: WARC-Target-URI not in header: {0}")]
     TargetURINotInWARCHeader(String),
+    #[error("Error: Malformed URL path: {0}")]
+    URLPath(String),
     #[error("Error parsing URL: {0}")]
     URLParse(#[from] url::ParseError),
     #[error("UTF8 Error: {0}")]
@@ -327,16 +327,22 @@ async fn segment_count(
     stream::iter(counts).try_sum().await
 }
 
-fn url_to_json_filename(url: &Url) -> Result<PathBuf, Error> {
+fn url_to_path(url: &Url) -> Result<(PathBuf, PathBuf), Error> {
     let path = url.path(); // could try to reverse the percent-encoding but it shouldn't matter
-    let filename = path
-        .rsplit('/')
-        .next()
-        .ok_or_else(|| Error::NoFilenameInPath(path.to_string()))?;
-    let name = filename
-        .strip_suffix(".warc.wet.gz")
-        .ok_or_else(|| Error::WrongFilenameExtension(filename.to_string()))?;
-    Ok(PathBuf::from(name).with_extension("json"))
+    let mut iter = path.split('/');
+    if let (Some(""), Some("crawl-data"), Some(crawl_name), Some(url_filename)) =
+        (iter.next(), iter.next(), iter.next(), iter.last())
+    {
+        let json_filename = PathBuf::from(
+            url_filename
+                .strip_suffix(".warc.wet.gz")
+                .ok_or_else(|| Error::WrongFilenameExtension(url_filename.to_string()))?,
+        )
+        .with_extension("json");
+        Ok((PathBuf::from(crawl_name), json_filename))
+    } else {
+        Err(Error::URLPath(path.to_string()))
+    }
 }
 
 async fn save<T>(path: &Path, data: T) -> Result<T, Error>
@@ -375,7 +381,10 @@ async fn process_segment(
     url: Url,
     counts_directory: PathBuf,
 ) -> Result<Counter<String>, Error> {
-    let json_path = counts_directory.join(url_to_json_filename(&url)?);
+    let (crawl_name, json_filename) = url_to_path(&url)?;
+    let subdirectory = counts_directory.join(crawl_name);
+    create_dir_all(&subdirectory).await?;
+    let json_path = subdirectory.join(&json_filename);
     if try_exists(&json_path).await? {
         load(&json_path).await // TODO: don't load if we're not summing
     } else {
