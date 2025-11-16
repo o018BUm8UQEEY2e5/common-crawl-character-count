@@ -329,6 +329,16 @@ struct Args {
         help = "Print segments as they are processed"
     )]
     verbose: bool,
+    #[arg(
+        short,
+        long,
+        default_value_t = true,
+        help = "Sum all segments (default)",
+        conflicts_with = "no_total"
+    )]
+    total: bool,
+    #[arg(long, help = "Don't sum segments")]
+    no_total: bool,
     // TODO:
     //#[arg(long, default_value_t = false, help = "Verify local data")]
     //verify: bool,
@@ -351,6 +361,7 @@ async fn main() -> Result<(), Error> {
     } else {
         Some(args.limit)
     };
+    let total = if args.no_total { false } else { args.total };
     let client = ClientBuilder::new(Client::new())
         .with(RetryTransientMiddleware::new_with_policy(
             ExponentialBackoff::builder().build_with_max_retries(args.retries),
@@ -359,25 +370,28 @@ async fn main() -> Result<(), Error> {
     let base_url = Url::parse("https://data.commoncrawl.org/").unwrap();
     let index = Url::parse("https://data.commoncrawl.org/crawl-data/index.html").unwrap();
     let counts_directory = PathBuf::from(args.counts_directory);
-    save(
-        &counts_directory.join("grand_total.json"),
-        get_wet_paths_urls(&client, index)
-            .await?
-            .then(|url| get_segment_urls(&client, &base_url, url))
-            .flatten_unordered(limit)
-            .map(|url| async {
-                let result: Result<Counter<String>, Error> = spawn(process_segment(
-                    client.clone(),
-                    url?,
-                    counts_directory.clone(),
-                ))
-                .await?;
-                result
-            })
-            .buffer_unordered(limit.unwrap_or(usize::MAX))
-            .try_sum()
-            .await?,
-    )
-    .await?;
+    let counts = get_wet_paths_urls(&client, index)
+        .await?
+        .then(|url| get_segment_urls(&client, &base_url, url))
+        .flatten_unordered(limit)
+        .map(|url| async {
+            let result: Result<Counter<String>, Error> = spawn(process_segment(
+                client.clone(),
+                url?,
+                counts_directory.clone(),
+            ))
+            .await?;
+            result
+        })
+        .buffer_unordered(limit.unwrap_or(usize::MAX));
+    if total {
+        save(
+            &counts_directory.join("grand_total.json"),
+            counts.try_sum().await?,
+        )
+        .await?;
+    } else {
+        counts.try_for_each(|_| async { Ok(()) }).await?;
+    };
     Ok(())
 }
