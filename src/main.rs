@@ -1,5 +1,6 @@
 use async_compression::tokio::bufread::GzipDecoder;
 use async_stream::try_stream;
+use bytes::Bytes;
 use chardetng::EncodingDetector;
 use clap::{Parser, ValueHint};
 use counter::Counter;
@@ -16,7 +17,7 @@ use select::{
 use serde::{de::DeserializeOwned, ser::Serialize};
 use std::{
     borrow::ToOwned,
-    io::{stdout, Write},
+    io::{self, Write, stdout},
     marker::Send,
     num::TryFromIntError,
     ops::Add,
@@ -126,6 +127,18 @@ async fn get(client: &ClientWithMiddleware, url: Url) -> Result<Response, Error>
     }
 }
 
+async fn get_url_stream_reader(
+    client: &ClientWithMiddleware,
+    url: Url,
+) -> Result<StreamReader<impl Stream<Item = Result<Bytes, io::Error>>, Bytes>, Error> {
+    Ok(StreamReader::new(
+        get(client, url)
+            .await?
+            .bytes_stream()
+            .map_err(io::Error::other),
+    ))
+}
+
 async fn get_wet_paths_urls(
     client: &ClientWithMiddleware,
     index: Url,
@@ -156,18 +169,12 @@ async fn get_segment_urls(
     base_url: &Url,
     paths_url: Url,
 ) -> impl Stream<Item = Result<Url, Error>> {
-    match get(client, paths_url).await {
-        Ok(response) => LinesStream::new(
-            BufReader::new(
-                create_gzip_decoder(StreamReader::new(
-                    response.bytes_stream().map_err(std::io::Error::other),
-                ))
-                .await,
-            )
-            .lines(),
-        )
-        .map(|path| Ok(base_url.join(&path?)?))
-        .left_stream(),
+    match get_url_stream_reader(client, paths_url).await {
+        Ok(stream_reader) => {
+            LinesStream::new(BufReader::new(create_gzip_decoder(stream_reader).await).lines())
+                .map(|path| Ok(base_url.join(&path?)?))
+                .left_stream()
+        }
         Err(err) => tokio_stream::once(Err(err)).right_stream(),
     }
 }
@@ -179,13 +186,8 @@ async fn segment_count(
     info!("counting: {}", segment_url);
     try_stream! {
         let mut buffer: Vec<u8> = Vec::new();
-        let mut gzip_decoder = create_gzip_decoder(StreamReader::new(
-            get(&client, segment_url)
-                .await?
-                .bytes_stream()
-                .map_err(std::io::Error::other),
-        ))
-        .await;
+        let mut gzip_decoder =
+            create_gzip_decoder(get_url_stream_reader(&client, segment_url).await?).await;
         // TODO async WARC reader
         gzip_decoder.read_to_end(&mut buffer).await?;
         let warc_reader = WarcReader::new(&buffer[..]);
