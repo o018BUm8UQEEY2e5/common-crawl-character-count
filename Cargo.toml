@@ -4,25 +4,25 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-async-compression = { version = "0.4.22", features = ["gzip", "tokio"] }
+async-compression = { version = "0.4.25", features = ["gzip", "tokio"] }
 bytes = "1.10.1"
 chardetng = "0.1.17"
-clap = { version = "4.5.35", features = ["derive"] }
+clap = { version = "4.5.40", features = ["derive"] }
 counter = { version = "0.6.0", features = ["serde"] }
 futures-util = "0.3.31"
 log = "0.4.27"
-num_cpus = "1.16.0"
+num_cpus = "1.17.0"
 regex = "1.11.1"
-reqwest = { version = "0.12", features = ["stream"] }
-reqwest-middleware = "0.4.1"
+reqwest = { version = "0.12.22", features = ["stream"] }
+reqwest-middleware = "0.4.2"
 reqwest-retry = "0.7.0"
 select = "0.6.1"
 serde = "1.0.219"
 thiserror = "2.0.12"
 tld = "2.36.0"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1.45.1", features = ["full"] }
 tokio-stream = { version = "0.1.17", features = ["io-util"] }
-tokio-util = { version = "0.7.14", features = ["io"] }
+tokio-util = { version = "0.7.15", features = ["io"] }
 unicode-segmentation = "1.12.0"
 url = "2.5.4"
 vow = "0.1.3"
