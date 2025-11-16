@@ -207,11 +207,16 @@ async fn segment_count(
                             target_uri
                                 .domain()
                                 .map(|domain| {
-                                    domain
-                                        .rsplit('.')
-                                        .next()
-                                        .ok_or_else(|| Error::NoTLDInDomain(String::from(domain)))
-                                        .and_then(|top_level_domain| {
+                                    // accept domains like "cvetyru-vn.ru."
+                                    match domain.strip_suffix('.') {
+                                        Some(domain) => domain,
+                                        None => domain,
+                                    }
+                                    .rsplit('.')
+                                    .next()
+                                    .ok_or_else(|| Error::NoTLDInDomain(String::from(domain)))
+                                    .and_then(
+                                        |top_level_domain| {
                                             if tld::exist(top_level_domain) {
                                                 Ok(top_level_domain.as_bytes())
                                             } else {
@@ -219,7 +224,8 @@ async fn segment_count(
                                                     top_level_domain,
                                                 )))
                                             }
-                                        })
+                                        },
+                                    )
                                 })
                                 .transpose()?,
                             true,
