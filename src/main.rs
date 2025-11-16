@@ -1,12 +1,16 @@
 use async_compression::tokio::bufread::GzipDecoder;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use chardetng::EncodingDetector;
 use clap::{Parser, ValueHint};
+use core::str;
 use counter::Counter;
-use futures_util::stream::{self, Stream, StreamExt, TryStream, TryStreamExt};
+use futures_util::{
+    pin_mut,
+    stream::{self, Stream, StreamExt, TryStream, TryStreamExt, try_unfold},
+};
 use log::{Level, LevelFilter, Log, Metadata, Record, info, set_logger, set_max_level, warn};
 use regex::Regex;
-use reqwest::{Client, Response};
+use reqwest::header::{ACCEPT_RANGES, RANGE};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_retry::{RetryTransientMiddleware, policies::ExponentialBackoff};
 use select::{
@@ -17,7 +21,7 @@ use serde::{de::DeserializeOwned, ser::Serialize};
 use std::{
     borrow::ToOwned,
     io::{self, Write, stdout},
-    marker::Send,
+    marker::{Send, Unpin},
     num::TryFromIntError,
     ops::Add,
     path::{Path, PathBuf},
@@ -36,8 +40,6 @@ use warc::{RecordType, WarcHeader, WarcReader};
 
 #[derive(Debug, thiserror::Error)]
 enum Error {
-    #[error("HTTP status error: {0}")]
-    HttpStatus(reqwest::StatusCode),
     #[error("IO error: {0}")]
     IO(#[from] std::io::Error),
     #[error("tokio join error: {0}")]
@@ -52,12 +54,16 @@ enum Error {
     Reqwest(#[from] reqwest::Error),
     #[error("reqwest_middleware error: {0}")]
     ReqwestMiddleware(#[from] reqwest_middleware::Error),
+    #[error("Error: Tried skipping beyond end of stream")]
+    StreamTooShort(),
     #[error("serde_json error: {0}")]
     TryFromInt(#[from] TryFromIntError),
     #[error("Error: WARC-Target-URI not in header: {0}")]
     TargetURINotInWARCHeader(String),
     #[error("Error parsing URL: {0}")]
     URLParse(#[from] url::ParseError),
+    #[error("UTF8 Error: {0}")]
+    UTF8(#[from] std::str::Utf8Error),
     #[error("vow error: {0}")]
     Vow(#[from] vow::Error),
     #[error("warc error: {0}")]
@@ -113,25 +119,107 @@ where
     }
 }
 
-async fn get(client: &ClientWithMiddleware, url: Url) -> Result<Response, Error> {
-    let response = client.get(url).send().await?;
-    if response.status().is_success() {
-        Ok(response)
-    } else {
-        Err(Error::HttpStatus(response.status()))
-    }
+fn skip_bytes<S>(byte_stream: S, skip: usize) -> impl Stream<Item = Result<Bytes, Error>>
+where
+    S: Stream<Item = Result<Bytes, Error>> + Unpin,
+{
+    try_unfold((byte_stream, skip), |(mut stream, mut skip)| async move {
+        match skip {
+            0 => match stream.next().await {
+                Some(item) => match item {
+                    Ok(bytes) => Ok(Some((bytes, (stream, 0)))),
+                    Err(error) => Err(error),
+                },
+                None => Ok(None),
+            },
+            1.. => {
+                while let Some(chunk_result) = stream.next().await {
+                    let chunk = chunk_result?;
+                    let chunk_len = chunk.len();
+                    if skip >= chunk_len {
+                        skip -= chunk_len;
+                        continue;
+                    } else {
+                        return Ok(Some((chunk.slice(skip..), (stream, 0))));
+                    }
+                }
+                Err(Error::StreamTooShort())
+            }
+        }
+    })
 }
 
-async fn get_url_stream_reader(
-    client: &ClientWithMiddleware,
+fn get_byte_stream(
+    client: ClientWithMiddleware,
     url: Url,
-) -> Result<StreamReader<impl Stream<Item = Result<Bytes, io::Error>>, Bytes>, Error> {
-    Ok(StreamReader::new(
-        get(client, url)
-            .await?
-            .bytes_stream()
-            .map_err(io::Error::other),
-    ))
+) -> impl Stream<Item = Result<Bytes, Error>> {
+    try_unfold(
+        (client, url, None, 0usize),
+        |(client, url, stream_opt, mut position)| async move {
+            let (mut stream, use_range_request) = match stream_opt {
+                Some((stream, use_range_request)) => (stream, use_range_request),
+                None => {
+                    let response = client.get(url.clone()).send().await.map_err(Error::from)?;
+                    let use_range_request = response
+                        .headers()
+                        .get(ACCEPT_RANGES)
+                        .map_or_else(|| false, |accept_ranges| accept_ranges == "bytes");
+
+                    (
+                        response.bytes_stream().map_err(Error::from).boxed(),
+                        use_range_request,
+                    )
+                }
+            };
+            loop {
+                match stream.next().await {
+                    Some(Ok(bytes)) => {
+                        position += bytes.len();
+                        return Ok(Some((
+                            bytes,
+                            (client, url, Some((stream, use_range_request)), position),
+                        )));
+                    }
+                    Some(Err(error)) => {
+                        warn!("{error}");
+                        warn!("Retrying...");
+                        stream = if use_range_request {
+                            client
+                                .get(url.clone())
+                                .header(RANGE, format!("bytes={position}-"))
+                                .send()
+                                .await
+                                .map_err(Error::from)?
+                                .bytes_stream()
+                                .map_err(Error::from)
+                                .boxed()
+                        } else {
+                            skip_bytes(
+                                client
+                                    .get(url.clone())
+                                    .send()
+                                    .await
+                                    .map_err(Error::from)?
+                                    .bytes_stream()
+                                    .map_err(Error::from),
+                                position,
+                            )
+                            .boxed()
+                        };
+                    }
+                    None => return Ok(None),
+                }
+            }
+        },
+    )
+    .boxed()
+}
+
+async fn get_bytes(client: &ClientWithMiddleware, url: Url) -> Result<Bytes, Error> {
+    get_byte_stream(client.clone(), url)
+        .try_collect::<BytesMut>()
+        .await
+        .map(|bytes| bytes.freeze())
 }
 
 async fn get_wet_paths_urls(
@@ -139,7 +227,7 @@ async fn get_wet_paths_urls(
     index: Url,
 ) -> Result<impl Stream<Item = Url>, Error> {
     let crawl_id = Regex::new(r"^[[:space:]]*CC-MAIN-([3-9][0-9]{3}|2[1-9][0-9]{2}|20[2-9][0-9]|201[3-9])-[0-9]{2}[[:space:]]*$").unwrap();
-    Document::from(get(client, index.clone()).await?.text().await?.as_str())
+    Document::from(str::from_utf8(&get_bytes(client, index.clone()).await?)?)
         .find(Name("a").and(Attr("href", ())))
         .filter_map(|a| {
             if crawl_id.is_match(a.text().as_str()) {
@@ -164,14 +252,16 @@ async fn get_segment_urls(
     base_url: &Url,
     paths_url: Url,
 ) -> impl Stream<Item = Result<Url, Error>> {
-    match get_url_stream_reader(client, paths_url).await {
-        Ok(stream_reader) => {
-            LinesStream::new(BufReader::new(create_gzip_decoder(stream_reader).await).lines())
-                .map(|path| Ok(base_url.join(&path?)?))
-                .left_stream()
-        }
-        Err(err) => tokio_stream::once(Err(err)).right_stream(),
-    }
+    LinesStream::new(
+        BufReader::new(
+            create_gzip_decoder(StreamReader::new(
+                get_byte_stream(client.clone(), paths_url).map_err(io::Error::other),
+            ))
+            .await,
+        )
+        .lines(),
+    )
+    .map(|path| Ok(base_url.join(&path?)?))
 }
 
 async fn segment_count(
@@ -179,15 +269,12 @@ async fn segment_count(
     segment_url: Url,
 ) -> Result<Counter<String>, Error> {
     info!("counting: {}", segment_url);
-    let response = get(&client, segment_url).await?;
-    let mut buffer: Vec<u8> = match response.content_length() {
-        Some(content_length) => Vec::with_capacity(content_length.try_into().unwrap_or(usize::MAX)),
-        None => Vec::new(),
-    };
-    let mut gzip_decoder = create_gzip_decoder(StreamReader::new(
-        response.bytes_stream().map_err(io::Error::other),
+    let gzip_decoder = create_gzip_decoder(StreamReader::new(
+        get_byte_stream(client, segment_url).map_err(io::Error::other),
     ))
     .await;
+    pin_mut!(gzip_decoder);
+    let mut buffer = Vec::new();
     gzip_decoder.read_to_end(&mut buffer).await?;
     // TODO: async WARC reader
     let warc_reader = WarcReader::new(&buffer[..]);
@@ -226,7 +313,7 @@ async fn segment_count(
             if tld::exist(top_level) {
                 Some(top_level.as_bytes())
             } else {
-                warn!("invalid tld: \"{}\" (uri: \"{}\")", top_level, target_uri);
+                warn!("Invalid TLD: \"{}\" (URI: \"{}\")", top_level, target_uri);
                 None
             }
         });
@@ -347,7 +434,6 @@ struct Args {
     //verify: bool,
 }
 
-// TODO: retry io error
 // TODO: Termination
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -364,10 +450,9 @@ async fn main() -> Result<(), Error> {
         Some(args.limit)
     };
     let total = if args.no_total { false } else { args.total };
-    let client = ClientBuilder::new(Client::new())
-        .with(RetryTransientMiddleware::new_with_policy(
-            ExponentialBackoff::builder().build_with_max_retries(args.retries),
-        ))
+    let retry_policy = ExponentialBackoff::builder().build_with_max_retries(args.retries);
+    let client = ClientBuilder::new(reqwest::Client::new())
+        .with(RetryTransientMiddleware::new_with_policy(retry_policy))
         .build();
     let base_url = Url::parse("https://data.commoncrawl.org/").unwrap();
     let index = Url::parse("https://data.commoncrawl.org/crawl-data/index.html").unwrap();
