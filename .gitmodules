@@ -1,0 +1,3 @@
+[submodule "counts"]
+	path = counts
+	url = https://huggingface.co/datasets/2Jyq/common-crawl-character-counts
