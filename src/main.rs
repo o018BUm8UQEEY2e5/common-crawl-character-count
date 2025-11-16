@@ -207,7 +207,11 @@ async fn segment_count(
         let parsed_url = match Url::parse(&target_uri) {
             Ok(parsed_url) => Some(parsed_url),
             Err(url::ParseError::IdnaError) => {
-                warn!("IDNA error parsing url: \"{}\"", &target_uri);
+                warn!("URL parse error: IDNA error: \"{}\"", &target_uri);
+                None
+            }
+            Err(url::ParseError::InvalidIpv4Address) => {
+                warn!("URL parse error: Invalid IPv4 address: \"{}\"", &target_uri);
                 None
             }
             Err(parse_error) => return Err(Error::from(parse_error)),
