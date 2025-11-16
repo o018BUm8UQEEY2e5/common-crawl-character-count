@@ -48,16 +48,12 @@ enum Error {
     NoHref(String),
     #[error("Error: No links found in {0}")]
     NoLinksFound(String),
-    #[error("Error: No TLD in domain: {0}")]
-    NoTLDInDomain(String),
     #[error("reqwest error: {0}")]
     Reqwest(#[from] reqwest::Error),
     #[error("reqwest_middleware error: {0}")]
     ReqwestMiddleware(#[from] reqwest_middleware::Error),
     #[error("serde_json error: {0}")]
     TryFromInt(#[from] TryFromIntError),
-    #[error("Error: TLD does not exist: {0}")]
-    TLDDoesNotExist(String),
     #[error("Error: WARC-Target-URI not in header: {0}")]
     TargetURINotInWARCHeader(String),
     #[error("Error parsing URL: {0}")]
@@ -203,29 +199,40 @@ async fn segment_count(
             ));
         };
         let target_uri = Url::parse(&header)?;
-        let top_level_domain = target_uri
-            .domain()
-            .map(|domain| {
-                // accept malformed domains like "cvetyru-vn.ru."
-                let Some(top_level_domain_) = match domain.strip_suffix('.') {
-                    Some(fixed_domain) => {
-                        warn!("Malformed domain: {}", domain);
-                        fixed_domain
+        let domain = target_uri.domain();
+        let maybe_tld_bytes = domain.and_then(|domain| {
+            // accept malformed domains like "cvetyru-vn.ru."
+            let domain = match domain.strip_suffix('.') {
+                Some(fixed_domain) => {
+                    warn!("malformed domain: \"{}\"", domain);
+                    fixed_domain
+                }
+                None => domain,
+            };
+            match domain 
+            .rsplit('.')
+            .next()
+            {
+                Some(top_level_domain) => {
+                    if tld::exist(top_level_domain) {
+                        Some(top_level_domain.as_bytes())
+                    } else {
+                        warn!(
+                            "invalid tld: \"{}\" (domain: \"{}\")",
+                            top_level_domain, domain
+                        );
+                        None
                     }
-                    None => domain,
                 }
-                .rsplit('.')
-                .next() else {
-                    return Err(Error::NoTLDInDomain(String::from(domain)));
-                };
-                if !tld::exist(top_level_domain_) {
-                    return Err(Error::TLDDoesNotExist(String::from(top_level_domain_)));
+                None => {
+                    warn!("couldn't find tld in \"{}\"", target_uri);
+                    None
                 }
-                Ok(top_level_domain_.as_bytes())
-            })
-            .transpose()?;
+            }
+        });
+
         let (decoded, _, _) = encoding_detector
-            .guess(top_level_domain, true)
+            .guess(maybe_tld_bytes, true)
             .decode(record.body());
         Ok(UnicodeSegmentation::graphemes(decoded.as_ref(), true)
             .map(String::from)
