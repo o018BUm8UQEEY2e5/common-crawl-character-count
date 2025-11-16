@@ -444,6 +444,8 @@ struct Args {
     total: bool,
     #[arg(long, help = "Don't sum segments")]
     no_total: bool,
+    #[arg(long, help = "Only count the number of segments")]
+    count_segments: bool,
     // TODO:
     //#[arg(long, default_value_t = false, help = "Verify local data")]
     //verify: bool,
@@ -478,7 +480,12 @@ async fn main() -> Result<(), Error> {
         .flatten_unordered(limit)
         .try_collect()
         .await?;
+    // TODO: add progress bar
     info!("found {} segment URLs", segment_urls.len());
+    if args.count_segments {
+        println!("{}", segment_urls.len());
+        return Ok(());
+    }
     let counts = stream::iter(segment_urls)
         .map(|url| async {
             spawn(process_segment(
