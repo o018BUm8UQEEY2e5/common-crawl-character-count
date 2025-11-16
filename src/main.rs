@@ -331,7 +331,7 @@ fn url_to_path(url: &Url) -> Result<(PathBuf, PathBuf), Error> {
     let path = url.path(); // could try to reverse the percent-encoding but it shouldn't matter
     let mut iter = path.split('/');
     if let (Some(""), Some("crawl-data"), Some(crawl_name), Some(url_filename)) =
-        (iter.next(), iter.next(), iter.next(), iter.last())
+        (iter.next(), iter.next(), iter.next(), iter.next_back())
     {
         let json_filename = PathBuf::from(
             url_filename
