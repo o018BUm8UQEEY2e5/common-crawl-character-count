@@ -290,7 +290,7 @@ async fn process_segment(
 ) -> Result<Counter<String>, Error> {
     let json_path = counts_directory.join(url_to_json_filename(&url)?);
     if try_exists(&json_path).await? {
-        load(&json_path).await
+        load(&json_path).await // TODO: don't load if we're not summing
     } else {
         save(&json_path, segment_count(client, url).await?).await
     }
@@ -348,7 +348,6 @@ struct Args {
 }
 
 // TODO: retry io error
-// TODO: make grand total optional to save memory
 // TODO: Termination
 #[tokio::main]
 async fn main() -> Result<(), Error> {
