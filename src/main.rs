@@ -492,7 +492,7 @@ async fn main() -> Result<(), Error> {
         println!("{}", segment_urls.len());
         return Ok(());
     }
-    let counts = stream::iter(segment_urls)
+    let counts = stream::iter(segment_urls.into_iter().rev())
         .map(|url| async {
             spawn(process_segment(
                 client.clone(),
