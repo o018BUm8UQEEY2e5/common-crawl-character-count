@@ -206,25 +206,20 @@ async fn segment_count(
             }
             Err(parse_error) => return Err(Error::from(parse_error)),
         };
-        let tld_bytes = parsed_url
-            .as_ref()
-            .and_then(|url| url.domain())
-            .map(|domain| match domain.strip_suffix('.') {
-                Some(fqdn) => fqdn,
-                None => domain,
-            })
-            .and_then(|domain| domain.rsplit('.').next())
-            .and_then(|top_level_domain| {
-                if tld::exist(top_level_domain) {
-                    Some(top_level_domain.as_bytes())
-                } else {
-                    warn!(
-                        "invalid tld: \"{}\" (uri: \"{}\")",
-                        top_level_domain, target_uri
-                    );
-                    None
-                }
-            });
+        let tld_bytes = parsed_url.as_ref().and_then(|url| {
+            let domain = url.domain()?;
+            let top_level = domain
+                .strip_suffix('.')
+                .unwrap_or(domain)
+                .rsplit('.')
+                .next()?;
+            if tld::exist(top_level) {
+                Some(top_level.as_bytes())
+            } else {
+                warn!("invalid tld: \"{}\" (uri: \"{}\")", top_level, target_uri);
+                None
+            }
+        });
         let (decoded, _, _) = encoding_detector
             .guess(tld_bytes, true)
             .decode(record.body());
