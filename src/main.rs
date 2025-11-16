@@ -339,7 +339,13 @@ fn url_to_path(url: &Url) -> Result<(PathBuf, PathBuf), Error> {
                 .ok_or_else(|| Error::WrongFilenameExtension(url_filename.to_string()))?,
         )
         .with_extension("json");
-        Ok((PathBuf::from(crawl_name), json_filename))
+        // CC-MAIN-YYYYMMDDHHMMSS-YYYYMMDDHHMMSS-NNNNN.warc.wet.gz
+        // TODO: validate filename
+        assert_eq!(url_filename.len(), 55);
+        Ok((
+            PathBuf::from(crawl_name).join(&url_filename[..37]),
+            json_filename,
+        ))
     } else {
         Err(Error::URLPath(path.to_string()))
     }
