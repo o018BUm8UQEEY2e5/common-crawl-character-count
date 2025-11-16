@@ -5,7 +5,6 @@ edition = "2024"
 
 [dependencies]
 async-compression = { version = "0.4.22", features = ["gzip", "tokio"] }
-async-stream = "0.3.6"
 bytes = "1.10.1"
 chardetng = "0.1.17"
 clap = { version = "4.5.35", features = ["derive"] }
