@@ -472,14 +472,18 @@ async fn main() -> Result<(), Error> {
     let base_url = Url::parse("https://data.commoncrawl.org/").unwrap();
     let index = Url::parse("https://data.commoncrawl.org/crawl-data/index.html").unwrap();
     let counts_directory = PathBuf::from(args.counts_directory);
-    let counts = get_wet_paths_urls(&client, index)
+    let segment_urls: Vec<Url> = get_wet_paths_urls(&client, index)
         .await?
         .then(|url| get_segment_urls(&client, &base_url, url))
         .flatten_unordered(limit)
+        .try_collect()
+        .await?;
+    info!("found {} segment URLs", segment_urls.len());
+    let counts = stream::iter(segment_urls)
         .map(|url| async {
             spawn(process_segment(
                 client.clone(),
-                url?,
+                url,
                 counts_directory.clone(),
             ))
             .await? as Result<Counter<String>, Error>
