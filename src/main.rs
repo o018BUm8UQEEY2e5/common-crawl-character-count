@@ -312,6 +312,7 @@ async fn segment_count(
                 .unwrap_or(domain)
                 .rsplit('.')
                 .next()?;
+            // TODO: what about discontinued TLDs?
             if tld::exist(top_level) {
                 Some(top_level.as_bytes())
             } else {
@@ -480,6 +481,7 @@ async fn main() -> Result<(), Error> {
     let base_url = Url::parse("https://data.commoncrawl.org/").unwrap();
     let index = Url::parse("https://data.commoncrawl.org/crawl-data/index.html").unwrap();
     let counts_directory = PathBuf::from(args.counts_directory);
+    // TODO: store in trie?
     let segment_urls: Vec<Url> = get_wet_paths_urls(&client, index)
         .await?
         .then(|url| get_segment_urls(&client, &base_url, url))
