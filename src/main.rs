@@ -346,7 +346,7 @@ fn url_to_path(url: &Url) -> Result<(PathBuf, PathBuf), Error> {
             .join("."), // TODO: use .with_added_extension() when it comes out of nightly
         );
         // could try to validate the date but that way madness lies
-        if !Regex::new(r"^(?:CC-MAIN-[0-9]{14}-[0-9]{14}-[0-9]{5}|CC-MAIN-[0-9]{14}-[0-9]{5}-ip(?:-(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){4}.ec2.internal).warc.wet.gz$").unwrap().is_match(url_filename) {
+        if !Regex::new(r"^CC-MAIN-[0-9]{14}-(?:[0-9]{14}-[0-9]{5}|[0-9]{5}-ip(?:-(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){4}\.(ec2|us-west-1\.compute)\.internal)\.warc\.wet\.gz$").unwrap().is_match(url_filename) {
             return Err(Error::UnknownFilenameFormat(url_filename.to_string()));
         }
         Ok((
