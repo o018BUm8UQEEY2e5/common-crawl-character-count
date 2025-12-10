@@ -9,7 +9,7 @@ use futures_util::{
     stream::{self, Stream, StreamExt, TryStream, TryStreamExt, try_unfold},
 };
 use log::{Level, LevelFilter, Log, Metadata, Record, info, set_logger, set_max_level, warn};
-use regex::Regex;
+use regex_static::static_regex;
 use reqwest::header::{ACCEPT_RANGES, RANGE};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_retry::{RetryTransientMiddleware, policies::ExponentialBackoff};
@@ -228,16 +228,17 @@ async fn get_wet_paths_urls(
     client: &ClientWithMiddleware,
     index: Url,
 ) -> Result<impl Stream<Item = Url>, Error> {
-    let crawl_id = Regex::new(r"^[[:space:]]*CC-MAIN-([3-9][0-9]{3}|2[1-9][0-9]{2}|20[2-9][0-9]|201[3-9])-[0-9]{2}[[:space:]]*$").unwrap();
     Document::from(str::from_utf8(&get_bytes(client, index.clone()).await?)?)
         .find(Name("a").and(Attr("href", ())))
         .filter_map(|a| {
-            if crawl_id.is_match(a.text().as_str()) {
-                Some(
-                    a.attr("href")
-                        .ok_or_else(|| Error::NoHref(a.html()))
-                        .and_then(|href| Ok(index.join(href)?.join("wet.paths.gz")?)),
-                )
+            if static_regex!(r"^[[:space:]]*CC-MAIN-([3-9][0-9]{3}|2[1-9][0-9]{2}|20[2-9][0-9]|201[3-9])-[0-9]{2}[[:space:]]*$")
+                .is_match(a.text()
+                .as_str()) {
+                    Some(
+                        a.attr("href")
+                            .ok_or_else(|| Error::NoHref(a.html()))
+                            .and_then(|href| Ok(index.join(href)?.join("wet.paths.gz")?)),
+                    )
             } else {
                 None
             }
@@ -346,8 +347,9 @@ fn url_to_path(url: &Url) -> Result<(PathBuf, PathBuf), Error> {
             .join("."), // TODO: use .with_added_extension() when it comes out of nightly
         );
         // could try to validate the date but that way madness lies
-        if !Regex::new(r"^CC-MAIN-[0-9]{14}-(?:[0-9]{14}-[0-9]{5}|[0-9]{5}-ip(?:-(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){4}\.(ec2|us-west-1\.compute)\.internal)\.warc\.wet\.gz$").unwrap().is_match(url_filename) {
-            return Err(Error::UnknownFilenameFormat(url_filename.to_string()));
+        if !static_regex!(r"^CC-MAIN-[0-9]{14}-(?:[0-9]{14}-[0-9]{5}|[0-9]{5}-ip(?:-(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){4}\.(ec2|us-west-1\.compute)\.internal)\.warc\.wet\.gz$")
+            .is_match(url_filename) {
+                return Err(Error::UnknownFilenameFormat(url_filename.to_string()));
         }
         Ok((
             PathBuf::from(crawl_name).join(&url_filename[..22]),
