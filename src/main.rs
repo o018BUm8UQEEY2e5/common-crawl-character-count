@@ -338,14 +338,11 @@ fn url_to_path(url: &Url) -> Result<(PathBuf, PathBuf), Error> {
         (iter.next(), iter.next(), iter.next(), iter.next_back())
     {
         let json_filename = PathBuf::from(
-            [
-                url_filename
-                    .strip_suffix(".warc.wet.gz")
-                    .ok_or_else(|| Error::WrongFilenameExtension(url_filename.to_string()))?,
-                "json",
-            ]
-            .join("."), // TODO: use .with_added_extension() when it comes out of nightly
-        );
+            url_filename
+                .strip_suffix(".warc.wet.gz")
+                .ok_or_else(|| Error::WrongFilenameExtension(url_filename.to_string()))?,
+        )
+        .with_added_extension("json");
         // could try to validate the date but that way madness lies
         if !static_regex!(r"^CC-MAIN-[0-9]{14}-(?:[0-9]{14}-[0-9]{5}|[0-9]{5}-ip(?:-(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){4}\.(ec2|us-west-1\.compute)\.internal)\.warc\.wet\.gz$")
             .is_match(url_filename) {
