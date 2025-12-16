@@ -27,6 +27,7 @@ use std::{
     num::TryFromIntError,
     ops::Add,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 use tokio::{
     fs::{create_dir_all, remove_dir_all, try_exists}, // TODO: use is_file
@@ -164,8 +165,8 @@ where
 
 // TODO: get rid of boxed()
 fn get_byte_stream(
-    client: ClientWithMiddleware,
-    url: Url,
+    client: Arc<ClientWithMiddleware>,
+    url: Arc<Url>,
 ) -> impl Stream<Item = Result<Bytes, Error>> {
     try_unfold(
         (client, url, None, 0usize),
@@ -173,7 +174,7 @@ fn get_byte_stream(
             let (mut stream, use_range_request) = match stream_opt {
                 Some((stream, use_range_request)) => (stream, use_range_request),
                 None => {
-                    let response = client.get(url.clone()).send().await.map_err(Error::from)?;
+                    let response = client.get(url.as_ref().clone()).send().await.map_err(Error::from)?;
                     let use_range_request = response
                         .headers()
                         .get(ACCEPT_RANGES)
@@ -199,7 +200,7 @@ fn get_byte_stream(
                         warn!("Retrying...");
                         stream = if use_range_request {
                             client
-                                .get(url.clone())
+                                .get(url.as_ref().clone())
                                 .header(RANGE, format!("bytes={position}-"))
                                 .send()
                                 .await
@@ -210,7 +211,7 @@ fn get_byte_stream(
                         } else {
                             skip_bytes(
                                 client
-                                    .get(url.clone())
+                                    .get(url.as_ref().clone())
                                     .send()
                                     .await
                                     .map_err(Error::from)?
@@ -229,7 +230,7 @@ fn get_byte_stream(
     .boxed()
 }
 
-async fn get_bytes(client: &ClientWithMiddleware, url: &Url) -> Result<Bytes, Error> {
+async fn get_bytes(client: &Arc<ClientWithMiddleware>, url: &Arc<Url>) -> Result<Bytes, Error> {
     get_byte_stream(client.clone(), url.clone())
         .try_collect::<BytesMut>()
         .await
@@ -237,9 +238,9 @@ async fn get_bytes(client: &ClientWithMiddleware, url: &Url) -> Result<Bytes, Er
 }
 
 async fn get_wet_paths_urls(
-    client: &ClientWithMiddleware,
-    index: &Url,
-) -> Result<impl Stream<Item = Url>, Error> {
+    client: &Arc<ClientWithMiddleware>,
+    index: &Arc<Url>,
+) -> Result<impl Stream<Item = Arc<Url>>, Error> {
     Document::from(str::from_utf8(&get_bytes(client, index).await?)?)
         .find(Name("a").and(Attr("href", ())))
         .filter_map(|a| {
@@ -249,13 +250,13 @@ async fn get_wet_paths_urls(
                     Some(
                         a.attr("href")
                             .ok_or_else(|| Error::NoHref(a.html()))
-                            .and_then(|href| Ok(index.join(href)?.join("wet.paths.gz")?)),
+                            .and_then(|href| Ok(Arc::new(index.join(href)?.join("wet.paths.gz")?))),
                     )
             } else {
                 None
             }
         })
-        .collect::<Result<Vec<Url>, Error>>()
+        .collect::<Result<Vec<Arc<Url>>, Error>>()
         .and_then(|urls| match urls.len() {
             0 => Err(Error::NoLinksFound(index.to_string())),
             1.. => Ok(tokio_stream::iter(urls)),
@@ -263,10 +264,10 @@ async fn get_wet_paths_urls(
 }
 
 async fn get_segment_urls(
-    client: ClientWithMiddleware,
-    base_url: Url,
-    paths_url: Url,
-) -> impl Stream<Item = Result<Url, Error>> {
+    client: Arc<ClientWithMiddleware>,
+    base_url: Arc<Url>,
+    paths_url: Arc<Url>,
+) -> impl Stream<Item = Result<Arc<Url>, Error>> {
     LinesStream::new(
         BufReader::new(
             create_gzip_decoder(StreamReader::new(
@@ -276,12 +277,12 @@ async fn get_segment_urls(
         )
         .lines(),
     )
-    .map(move |path| Ok(base_url.join(&path?)?))
+    .map(move |path| Ok(Arc::new(base_url.join(&path?)?)))
 }
 
 async fn segment_count(
-    client: ClientWithMiddleware,
-    segment_url: Url,
+    client: Arc<ClientWithMiddleware>,
+    segment_url: Arc<Url>,
 ) -> Result<Counter<String>, Error> {
     info!("counting: {}", segment_url);
     let gzip_decoder = create_gzip_decoder(StreamReader::new(
@@ -378,13 +379,13 @@ fn url_to_path(url: &Url) -> Result<(PathBuf, PathBuf), Error> {
     }
 }
 
-fn get_crawl_name(url: &Url) -> Result<String, Error> {
+fn get_crawl_name(url: &Arc<Url>) -> Result<String, Error> {
     match url
         .path_segments()
         .and_then(|mut path_segments| path_segments.nth(1))
     {
         Some(crawl_name) => Ok(crawl_name.into()),
-        None => Err(Error::CrawlNameNotFound(url.clone().into())),
+        None => Err(Error::CrawlNameNotFound(url.clone().to_string())),
     }
 }
 
@@ -420,9 +421,9 @@ where
 }
 
 async fn process_segment(
-    client: ClientWithMiddleware,
-    url: Url,
-    counts_directory: PathBuf,
+    client: Arc<ClientWithMiddleware>,
+    url: Arc<Url>,
+    counts_directory: Arc<PathBuf>,
 ) -> Result<Counter<String>, Error> {
     let (path, json_filename) = url_to_path(&url)?;
     let subdirectory = counts_directory.join(path);
@@ -513,12 +514,14 @@ async fn main() -> Result<(), Error> {
     });
     let total = if args.no_total { false } else { args.total };
     let retry_policy = ExponentialBackoff::builder().build_with_max_retries(args.retries);
-    let client = ClientBuilder::new(reqwest::Client::new())
-        .with(RetryTransientMiddleware::new_with_policy(retry_policy))
-        .build();
-    let base_url = Url::parse("https://data.commoncrawl.org/").unwrap();
-    let index = Url::parse("https://data.commoncrawl.org/crawl-data/index.html").unwrap();
-    let counts_directory = PathBuf::from(args.counts_directory);
+    let client = Arc::new(
+        ClientBuilder::new(reqwest::Client::new())
+            .with(RetryTransientMiddleware::new_with_policy(retry_policy))
+            .build(),
+    );
+    let base_url = Arc::new(Url::parse("https://data.commoncrawl.org/").unwrap());
+    let index = Arc::new(Url::parse("https://data.commoncrawl.org/crawl-data/index.html").unwrap());
+    let counts_directory = Arc::new(PathBuf::from(args.counts_directory));
     let output_path = args
         .output
         .map(PathBuf::from)
@@ -538,7 +541,7 @@ async fn main() -> Result<(), Error> {
     let counts = stream::iter(
         get_wet_paths_urls(&client, &index)
             .await?
-            .collect::<Vec<Url>>()
+            .collect::<Vec<Arc<Url>>>()
             .await
             .into_iter()
             .rev(),
@@ -553,7 +556,7 @@ async fn main() -> Result<(), Error> {
             let crawl_json_file_path = counts_directory
                 .join(&crawl_name)
                 .with_added_extension("json");
-            let crawl_count = if try_exists(crawl_json_file_path.clone()).await? {
+            let crawl_count = if try_exists(&crawl_json_file_path).await? {
                 load(&crawl_json_file_path).await
             } else {
                 save(
