@@ -299,7 +299,7 @@ async fn segment_count(
         let mut encoding_detector = EncodingDetector::new();
         encoding_detector.feed(record.body(), true);
         let Some(target_uri) = record.header(WarcHeader::TargetURI) else {
-            let (raw_record_header, _) = record.clone().into_raw_parts();
+            let (raw_record_header, _) = record.into_raw_parts();
             return Err(Error::TargetURINotInWARCHeader(
                 raw_record_header.to_string(),
             ));
