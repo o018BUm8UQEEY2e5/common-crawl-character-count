@@ -151,6 +151,7 @@ where
     })
 }
 
+// TODO: get rid of boxed()
 fn get_byte_stream(
     client: ClientWithMiddleware,
     url: Url,
@@ -398,7 +399,7 @@ async fn process_segment(
     create_dir_all(&subdirectory).await?;
     let json_path = subdirectory.join(&json_filename);
     if try_exists(&json_path).await? {
-        load(&json_path).await // TODO: don't load if we're not summing
+        load(&json_path).await
     } else {
         save(&json_path, segment_count(client, url).await?).await
     }
@@ -437,7 +438,7 @@ struct Args {
         short,
         long,
         default_value_t = false,
-        help = "Print segments as they are processed"
+        help = "Print segments as they are processed" // TODO: better help text
     )]
     verbose: bool,
     #[arg(
@@ -452,9 +453,6 @@ struct Args {
     no_total: bool,
     #[arg(long, help = "Only count the number of segments")]
     count_segments: bool,
-    // TODO:
-    //#[arg(long, default_value_t = false, help = "Verify local data")]
-    //verify: bool,
 }
 
 // TODO: Termination
@@ -480,7 +478,6 @@ async fn main() -> Result<(), Error> {
     let base_url = Url::parse("https://data.commoncrawl.org/").unwrap();
     let index = Url::parse("https://data.commoncrawl.org/crawl-data/index.html").unwrap();
     let counts_directory = PathBuf::from(args.counts_directory);
-    // TODO: store in trie?
     let segment_urls: Vec<Url> = get_wet_paths_urls(&client, index)
         .await?
         .then(|url| get_segment_urls(&client, &base_url, url))
