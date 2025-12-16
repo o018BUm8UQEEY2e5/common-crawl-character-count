@@ -62,6 +62,8 @@ enum Error {
     TargetURINotInWARCHeader(String),
     #[error("Unknown filename scheme: {0}")]
     UnknownFilenameFormat(String),
+    #[error("URL cannot be a base: {0}")]
+    URLCannotBeBase(String),
     #[error("Error: Malformed URL path: {0}")]
     URLPath(String),
     #[error("Error parsing URL: {0}")]
@@ -340,10 +342,19 @@ async fn segment_count(
 }
 
 fn url_to_path(url: &Url) -> Result<(PathBuf, PathBuf), Error> {
-    let path = url.path(); // could try to reverse the percent-encoding but it shouldn't matter
-    let mut iter = path.split('/');
-    if let (Some(""), Some("crawl-data"), Some(crawl_name), Some(url_filename)) =
-        (iter.next(), iter.next(), iter.next(), iter.next_back())
+    // could try to reverse the percent-encoding but it shouldn't matter
+    let path_segments: Vec<_> = url
+        .path_segments()
+        .ok_or_else(|| Error::URLCannotBeBase(url.to_string()))?
+        .collect();
+    if let [
+        "crawl-data",
+        crawl_name,
+        "segments",
+        _segment_directory,
+        "wet",
+        url_filename,
+    ] = path_segments.as_slice()
     {
         let json_filename = PathBuf::from(
             url_filename
@@ -361,7 +372,7 @@ fn url_to_path(url: &Url) -> Result<(PathBuf, PathBuf), Error> {
             json_filename,
         ))
     } else {
-        Err(Error::URLPath(path.to_string()))
+        Err(Error::URLPath(url.to_string()))
     }
 }
 
