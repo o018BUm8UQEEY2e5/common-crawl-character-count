@@ -29,7 +29,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use tokio::{
-    fs::{create_dir_all, try_exists}, // TODO: use is_file
+    fs::{create_dir_all, remove_dir_all, try_exists}, // TODO: use is_file
     io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, BufReader},
     task::{JoinError, spawn},
 };
@@ -42,6 +42,8 @@ use warc::{RecordType, WarcHeader, WarcReader};
 
 #[derive(Debug, thiserror::Error)]
 enum Error {
+    #[error("Crawl name not found in URL path: {0}")]
+    CrawlNameNotFound(String),
     #[error("IO error: {0}")]
     IO(#[from] std::io::Error),
     #[error("tokio join error: {0}")]
@@ -227,8 +229,8 @@ fn get_byte_stream(
     .boxed()
 }
 
-async fn get_bytes(client: &ClientWithMiddleware, url: Url) -> Result<Bytes, Error> {
-    get_byte_stream(client.clone(), url)
+async fn get_bytes(client: &ClientWithMiddleware, url: &Url) -> Result<Bytes, Error> {
+    get_byte_stream(client.clone(), url.clone())
         .try_collect::<BytesMut>()
         .await
         .map(|bytes| bytes.freeze())
@@ -236,9 +238,9 @@ async fn get_bytes(client: &ClientWithMiddleware, url: Url) -> Result<Bytes, Err
 
 async fn get_wet_paths_urls(
     client: &ClientWithMiddleware,
-    index: Url,
+    index: &Url,
 ) -> Result<impl Stream<Item = Url>, Error> {
-    Document::from(str::from_utf8(&get_bytes(client, index.clone()).await?)?)
+    Document::from(str::from_utf8(&get_bytes(client, index).await?)?)
         .find(Name("a").and(Attr("href", ())))
         .filter_map(|a| {
             if static_regex!(r"^[[:space:]]*CC-MAIN-([3-9][0-9]{3}|2[1-9][0-9]{2}|20[2-9][0-9]|201[3-9])-[0-9]{2}[[:space:]]*$")
@@ -261,20 +263,20 @@ async fn get_wet_paths_urls(
 }
 
 async fn get_segment_urls(
-    client: &ClientWithMiddleware,
-    base_url: &Url,
+    client: ClientWithMiddleware,
+    base_url: Url,
     paths_url: Url,
 ) -> impl Stream<Item = Result<Url, Error>> {
     LinesStream::new(
         BufReader::new(
             create_gzip_decoder(StreamReader::new(
-                get_byte_stream(client.clone(), paths_url).map_err(io::Error::other),
+                get_byte_stream(client, paths_url).map_err(io::Error::other),
             ))
             .await,
         )
         .lines(),
     )
-    .map(|path| Ok(base_url.join(&path?)?))
+    .map(move |path| Ok(base_url.join(&path?)?))
 }
 
 async fn segment_count(
@@ -376,6 +378,16 @@ fn url_to_path(url: &Url) -> Result<(PathBuf, PathBuf), Error> {
     }
 }
 
+fn get_crawl_name(url: &Url) -> Result<String, Error> {
+    match url
+        .path_segments()
+        .and_then(|mut path_segments| path_segments.nth(1))
+    {
+        Some(crawl_name) => Ok(crawl_name.into()),
+        None => Err(Error::CrawlNameNotFound(url.clone().into())),
+    }
+}
+
 async fn save<T>(path: &Path, data: T) -> Result<T, Error>
 where
     T: DeserializeOwned + Serialize + Send + ToOwned<Owned = T>,
@@ -412,8 +424,8 @@ async fn process_segment(
     url: Url,
     counts_directory: PathBuf,
 ) -> Result<Counter<String>, Error> {
-    let (crawl_name, json_filename) = url_to_path(&url)?;
-    let subdirectory = counts_directory.join(crawl_name);
+    let (path, json_filename) = url_to_path(&url)?;
+    let subdirectory = counts_directory.join(path);
     create_dir_all(&subdirectory).await?;
     let json_path = subdirectory.join(&json_filename);
     if try_exists(&json_path).await? {
@@ -434,7 +446,7 @@ struct Args {
         long,
         default_value = "counts",
         value_hint = ValueHint::DirPath,
-        help = "Directory where segment count files will be stored")]
+        help = "Directory where crawl and segment count files will be stored")]
     counts_directory: String,
     #[arg(
         short,
@@ -475,6 +487,12 @@ struct Args {
     no_total: bool,
     #[arg(long, help = "Only count the number of segments")]
     count_segments: bool,
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Don't delete segment counts when a crawl is complete"
+    )]
+    no_delete: bool,
 }
 
 // TODO: Termination
@@ -493,11 +511,6 @@ async fn main() -> Result<(), Error> {
     } else {
         LevelFilter::Warn
     });
-    let limit = if args.no_limit || args.limit == 0 {
-        None
-    } else {
-        Some(args.limit)
-    };
     let total = if args.no_total { false } else { args.total };
     let retry_policy = ExponentialBackoff::builder().build_with_max_retries(args.retries);
     let client = ClientBuilder::new(reqwest::Client::new())
@@ -510,28 +523,77 @@ async fn main() -> Result<(), Error> {
         .output
         .map(PathBuf::from)
         .unwrap_or_else(|| counts_directory.join("grand_total.json"));
-    let segment_urls: Vec<Url> = get_wet_paths_urls(&client, index)
-        .await?
-        .then(|url| get_segment_urls(&client, &base_url, url))
-        .flatten_unordered(limit)
-        .try_collect()
-        .await?;
-    // TODO: add progress bar
-    info!("found {} segment URLs", segment_urls.len());
     if args.count_segments {
-        println!("{}", segment_urls.len());
+        println!(
+            "{}",
+            get_wet_paths_urls(&client, &index)
+                .await?
+                .then(|url| get_segment_urls(client.clone(), base_url.clone(), url))
+                .flatten_unordered(if args.no_limit { 0 } else { args.limit })
+                .try_fold(0, |acc, _| async move { Ok(acc + 1) })
+                .await?
+        );
         return Ok(());
     }
-    let counts = stream::iter(segment_urls.into_iter().rev())
-        .map(|url| async {
-            spawn(process_segment(
-                client.clone(),
-                url,
-                counts_directory.clone(),
-            ))
-            .await? as Result<Counter<String>, Error>
-        })
-        .buffer_unordered(limit.unwrap_or(usize::MAX));
+    let counts = stream::iter(
+        get_wet_paths_urls(&client, &index)
+            .await?
+            .collect::<Vec<Url>>()
+            .await
+            .into_iter()
+            .rev(),
+    )
+    .then(|wet_paths_url| {
+        let client = client.clone();
+        let base_url = base_url.clone();
+        let counts_directory = counts_directory.clone();
+        async move {
+            let crawl_name = get_crawl_name(&wet_paths_url)?;
+            info!("crawl: {}", crawl_name);
+            let crawl_json_file_path = counts_directory
+                .join(&crawl_name)
+                .with_added_extension("json");
+            let crawl_count = if try_exists(crawl_json_file_path.clone()).await? {
+                load(&crawl_json_file_path).await
+            } else {
+                save(
+                    &crawl_json_file_path,
+                    get_segment_urls(client.clone(), base_url, wet_paths_url)
+                        .await
+                        .map_ok(|url| {
+                            let client = client.clone();
+                            let counts_directory = counts_directory.clone();
+                            async move {
+                                debug!("segment: {}", url);
+                                debug!("path: {}", {
+                                    let (path, filename) = url_to_path(&url)?;
+                                    counts_directory
+                                        .join(path)
+                                        .join(filename)
+                                        .to_string_lossy()
+                                        .into_owned()
+                                });
+                                // TODO: add progress bar
+                                spawn(process_segment(client, url, counts_directory)).await?
+                            }
+                        })
+                        .try_buffer_unordered(if args.no_limit || args.limit == 0 {
+                            usize::MAX
+                        } else {
+                            args.limit
+                        })
+                        .try_sum()
+                        .await?,
+                )
+                .await
+            };
+            let segment_counts_directory = counts_directory.join(crawl_name);
+            if !args.no_delete && try_exists(&segment_counts_directory).await? {
+                remove_dir_all(&segment_counts_directory).await?;
+            }
+            crawl_count
+        }
+    });
     if total {
         save(
             &output_path,
