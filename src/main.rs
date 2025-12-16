@@ -191,7 +191,7 @@ fn get_byte_stream(
                         )));
                     }
                     Some(Err(error)) => {
-                        warn!("{error}");
+                        warn!("{}", error);
                         warn!("Retrying...");
                         stream = if use_range_request {
                             client
@@ -279,7 +279,7 @@ async fn segment_count(
     client: ClientWithMiddleware,
     segment_url: Url,
 ) -> Result<Counter<String>, Error> {
-    info!("counting: {segment_url}");
+    info!("counting: {}", segment_url);
     let gzip_decoder = create_gzip_decoder(StreamReader::new(
         get_byte_stream(client, segment_url).map_err(io::Error::other),
     ))
