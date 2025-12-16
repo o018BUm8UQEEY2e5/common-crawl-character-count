@@ -483,9 +483,9 @@ struct Args {
         conflicts_with = "no_total"
     )]
     total: bool,
-    #[arg(long, help = "Don't sum segments")]
+    #[arg(long, default_value_t = false, help = "Don't sum segments")]
     no_total: bool,
-    #[arg(long, help = "Only count the number of segments")]
+    #[arg(long, default_value_t = false, help = "Only count the number of segments")]
     count_segments: bool,
     #[arg(
         long,
