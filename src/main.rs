@@ -415,9 +415,10 @@ async fn process_segment(
 #[derive(Parser, Debug)]
 #[command(version, about = "count characters in the common crawl", long_about = None)]
 struct Args {
-    // TODO:
-    //    #[arg(long, default_value = "", value_hint = ValueHint::DirPath, help = "output file")]
-    //    output: String,
+    #[arg(long, 
+          value_hint = ValueHint::FilePath,
+          help = "Output file. Defaults to $counts_directory/grand_total.json")]
+    output: Option<String>,
     #[arg(
         long,
         default_value = "counts",
@@ -494,6 +495,10 @@ async fn main() -> Result<(), Error> {
     let base_url = Url::parse("https://data.commoncrawl.org/").unwrap();
     let index = Url::parse("https://data.commoncrawl.org/crawl-data/index.html").unwrap();
     let counts_directory = PathBuf::from(args.counts_directory);
+    let output_path = args
+        .output
+        .map(PathBuf::from)
+        .unwrap_or_else(|| counts_directory.join("grand_total.json"));
     let segment_urls: Vec<Url> = get_wet_paths_urls(&client, index)
         .await?
         .then(|url| get_segment_urls(&client, &base_url, url))
@@ -518,7 +523,7 @@ async fn main() -> Result<(), Error> {
         .buffer_unordered(limit.unwrap_or(usize::MAX));
     if total {
         save(
-            &counts_directory.join("grand_total.json"),
+            &output_path,
             counts.try_sum().await?,
         )
         .await?;
