@@ -8,7 +8,9 @@ use futures_util::{
     pin_mut,
     stream::{self, Stream, StreamExt, TryStream, TryStreamExt, try_unfold},
 };
-use log::{Level, LevelFilter, Log, Metadata, Record, info, set_logger, set_max_level, warn};
+use log::{
+    Level, LevelFilter, Log, Metadata, Record, debug, info, set_logger, set_max_level, warn,
+};
 use regex_static::static_regex;
 use reqwest::header::{ACCEPT_RANGES, RANGE};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
@@ -79,6 +81,11 @@ const MY_LOGGER: MyLogger = MyLogger;
 struct MyLogger;
 
 impl Log for MyLogger {
+    #[cfg(debug_assertions)]
+    fn enabled(&self, metadata: &Metadata) -> bool {
+        metadata.level() <= Level::Debug
+    }
+    #[cfg(not(debug_assertions))]
     fn enabled(&self, metadata: &Metadata) -> bool {
         metadata.level() <= Level::Info
     }
@@ -434,6 +441,9 @@ struct Args {
     retries: u32,
     //    #[arg(short, long, default_value_t = false, help = "Show progress")]
     //    progress: bool,
+    #[cfg(debug_assertions)]
+    #[arg(long, default_value_t = false, help = "Print debug information")]
+    debug: bool,
     #[arg(
         short,
         long,
@@ -460,7 +470,13 @@ struct Args {
 async fn main() -> Result<(), Error> {
     let args = Args::parse();
     set_logger(&MY_LOGGER).unwrap();
-    set_max_level(if args.verbose {
+    #[cfg(debug_assertions)]
+    let debug = args.debug;
+    #[cfg(not(debug_assertions))]
+    let debug = false;
+    set_max_level(if debug {
+        LevelFilter::Debug
+    } else if args.verbose {
         LevelFilter::Info
     } else {
         LevelFilter::Warn

@@ -10,7 +10,7 @@ chardetng = "0.1.17"
 clap = { version = "4.5.53", features = ["derive"] }
 counter = { version = "0.6.0", features = ["serde"] }
 futures-util = "0.3.31"
-log = "0.4.29"
+log = { version = "0.4.29", features = ["max_level_debug", "release_max_level_info"] }
 num_cpus = "1.17.0"
 regex_static = "0.1.1"
 reqwest = { version = "0.12.26", features = ["stream"] }
